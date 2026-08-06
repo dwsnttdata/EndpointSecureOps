@@ -1,4 +1,4 @@
-# IntuneRW-Core
+# EndpointOps-MCP
 
 A full **read/write** [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for managing **Microsoft Intune** and **Entra ID (Azure AD)** through the Microsoft Graph API. It gives AI assistants (Claude Desktop, VS Code Copilot, Cursor, Copilot Studio, etc.) direct, structured access to device management, app management, compliance, security, identity, and reporting operations across your tenant.
 
