@@ -53,7 +53,7 @@ def _transport_security() -> TransportSecuritySettings:
 # Copilot Studio requires JSON responses (not SSE streaming) and a stateless
 # HTTP transport since each call may be routed to a different instance.
 mcp = FastMCP(
-    "intune-mcp-server",
+    "EndpointOps-MCP",
     host="0.0.0.0",
     json_response=True,
     stateless_http=True,

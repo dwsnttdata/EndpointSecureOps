@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "intunerw-core"
+name = "endpointops-mcp"
 version = "1.0.0"
-description = "IntuneRW-Core: full read/write MCP server for Microsoft Intune & Entra ID via Microsoft Graph API"
+description = "EndpointOps-MCP: full read/write MCP server for Microsoft Intune & Entra ID via Microsoft Graph API"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -33,12 +33,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nelladath/IntuneRW-Core"
-Repository = "https://github.com/nelladath/IntuneRW-Core"
-Issues = "https://github.com/nelladath/IntuneRW-Core/issues"
+Homepage = "https://github.com/nelladath/EndpointOps-MCP"
+Repository = "https://github.com/nelladath/EndpointOps-MCP"
+Issues = "https://github.com/nelladath/EndpointOps-MCP/issues"
 
 [project.scripts]
-intune-mcp-server = "intune_mcp_server.server:main"
+endpointops-mcp = "intune_mcp_server.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["intune_mcp_server"]
