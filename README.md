@@ -161,8 +161,8 @@ CloudPC.ReadWrite.All
 ## Installation
 
 ```powershell
-git clone https://github.com/nelladath/IntuneRW-Core.git
-cd IntuneRW-Core
+git clone https://github.com/nelladath/EndpointOps-MCP.git
+cd EndpointOps-MCP
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -197,9 +197,9 @@ See [`env.example`](env.example) for the full list of options (interactive login
 ```json
 {
     "servers": {
-        "intune-rw-core": {
+        "EndpointOps-MCP": {
             "type": "stdio",
-            "command": "${workspaceFolder}/.venv/Scripts/intune-mcp-server.exe",
+            "command": "${workspaceFolder}/.venv/Scripts/endpointops-mcp.exe",
             "args": [],
             "env": {
                 "TENANT_ID": "",
@@ -211,7 +211,7 @@ See [`env.example`](env.example) for the full list of options (interactive login
 }
 ```
 
-- On macOS/Linux use `${workspaceFolder}/.venv/bin/intune-mcp-server` instead.
+- On macOS/Linux use `${workspaceFolder}/.venv/bin/endpointops-mcp` instead.
 - You can leave `env` empty and rely on a `.env` file in the project root instead — the server loads it automatically via `python-dotenv`.
 - Alternatively, run the server as a plain module without the console script: `"command": "python", "args": ["-m", "intune_mcp_server"]`.
 4. Reload the VS Code window (or use the MCP: List Servers command) and the 34 tools listed above will become available to Copilot Chat.
