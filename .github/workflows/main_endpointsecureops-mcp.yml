@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'EndpointSecureOps-MCP'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_57C3455DEE7243878627C1684936BD79 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6E4DBD32953245909CA7D19909A9F962 }}
