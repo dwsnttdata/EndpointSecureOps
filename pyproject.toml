@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nelladath/EndpointOps-MCP"
-Repository = "https://github.com/nelladath/EndpointOps-MCP"
-Issues = "https://github.com/nelladath/EndpointOps-MCP/issues"
+Homepage = "https://github.com/dwsnttdata/EndpointOps-MCP"
+Repository = "https://github.com/dwsnttdata/EndpointOps-MCP"
+Issues = "https://github.com/dwsnttdata/EndpointOps-MCP/issues"
 
 [project.scripts]
 endpointops-mcp = "intune_mcp_server.server:main"

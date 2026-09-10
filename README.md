@@ -231,6 +231,21 @@ In addition to stdio (the default, used by most desktop MCP clients), the server
 uvicorn intune_mcp_server.mcp_app:app --host 0.0.0.0 --port 8000
 ```
 
+For Copilot Studio production hosting, set `AUTH_MODE=delegated` and
+`MCP_AUTH_ENABLED=true`. Configure the MCP API's Entra App ID URI in
+`MCP_API_AUDIENCE`, expose the `Mcp.Access` delegated scope, and inject
+`MCP_CLIENT_SECRET` from Azure Key Vault. The HTTP middleware validates the
+Copilot Studio bearer token and exchanges it for a Microsoft Graph delegated
+token with OAuth on-behalf-of (OBO). Do not use device-code login or a shared
+MSAL cache in the hosted deployment.
+
+PIM remains an authorization control in Entra/Intune: the signed-in user must
+activate the eligible Intune or Entra role before a privileged Graph operation.
+Graph and Intune RBAC enforce the active assignment; `confirm=True` is only an
+additional safety acknowledgement, not an authorization check. Configure short
+PIM activations, MFA, justification, approval, and ticket requirements for
+high-impact actions.
+
 A minimal REST bridge exposing a handful of tools as plain HTTP endpoints is also available in [`bridge.py`](bridge.py) (FastAPI) for scenarios that need simple REST calls instead of the native MCP protocol.
 
 ---

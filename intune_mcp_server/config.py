@@ -24,6 +24,10 @@ class GraphConfig:
     token_cache_path: str = str(PROJECT_ROOT / ".msal_token_cache.bin")
     graph_endpoint: str = "https://graph.microsoft.com/v1.0"
     beta_endpoint: str = "https://graph.microsoft.com/beta"
+    mcp_auth_enabled: bool = False
+    mcp_api_audience: str = ""
+    mcp_required_scope: str = "Mcp.Access"
+    mcp_client_secret: str = ""
     
     @classmethod
     def from_env(cls) -> "GraphConfig":
@@ -47,6 +51,10 @@ class GraphConfig:
         tenant_id = os.getenv("TENANT_ID")
         client_id = os.getenv("CLIENT_ID")
         client_secret = os.getenv("CLIENT_SECRET")
+        mcp_auth_enabled = _parse_bool(os.getenv("MCP_AUTH_ENABLED"), default=False)
+        mcp_api_audience = (os.getenv("MCP_API_AUDIENCE", "") or "").strip()
+        mcp_required_scope = (os.getenv("MCP_REQUIRED_SCOPE", "Mcp.Access") or "Mcp.Access").strip()
+        mcp_client_secret = os.getenv("MCP_CLIENT_SECRET", client_secret or "") or ""
 
         if auth_mode in {"app", "hybrid"} and not all([tenant_id, client_id, client_secret]):
             raise ValueError(
@@ -58,6 +66,13 @@ class GraphConfig:
                 "Missing required environment variables for delegated auth. "
                 "Please set TENANT_ID and CLIENT_ID in your .env file."
             )
+        if mcp_auth_enabled:
+            if auth_mode != "delegated":
+                raise ValueError("MCP_AUTH_ENABLED requires AUTH_MODE=delegated")
+            if not mcp_api_audience or not mcp_client_secret:
+                raise ValueError(
+                    "Hosted delegated auth requires MCP_API_AUDIENCE and MCP_CLIENT_SECRET."
+                )
         
         return cls(
             tenant_id=tenant_id or "",
@@ -70,6 +85,10 @@ class GraphConfig:
             token_cache_path=os.getenv("TOKEN_CACHE_PATH", str(PROJECT_ROOT / ".msal_token_cache.bin")),
             graph_endpoint=os.getenv("GRAPH_ENDPOINT", "https://graph.microsoft.com/v1.0"),
             beta_endpoint=os.getenv("BETA_ENDPOINT", "https://graph.microsoft.com/beta"),
+            mcp_auth_enabled=mcp_auth_enabled,
+            mcp_api_audience=mcp_api_audience,
+            mcp_required_scope=mcp_required_scope,
+            mcp_client_secret=mcp_client_secret,
         )
 
 

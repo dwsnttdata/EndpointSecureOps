@@ -10,6 +10,7 @@ import httpx
 from msal import ConfidentialClientApplication, PublicClientApplication, SerializableTokenCache
 
 from .config import get_config, GraphConfig
+from .request_auth import get_request_auth
 
 _msal_executor = ThreadPoolExecutor(max_workers=2)
 
@@ -93,6 +94,28 @@ class GraphClient:
         expires_in = result.get("expires_in", 3600)
         self._token_expires = datetime.now() + timedelta(seconds=expires_in - 300)
         return self._token
+
+    async def _acquire_obo_token(self, user_assertion: str) -> str:
+        """Exchange the Copilot Studio user token for a delegated Graph token."""
+        if not self.config.mcp_client_secret:
+            raise AuthRequiredError("MCP_CLIENT_SECRET is required for hosted delegated authentication.")
+        app = ConfidentialClientApplication(
+            client_id=self.config.client_id,
+            client_credential=self.config.mcp_client_secret,
+            authority=f"https://login.microsoftonline.com/{self.config.tenant_id}",
+        )
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _msal_executor,
+            lambda: app.acquire_token_on_behalf_of(
+                user_assertion=user_assertion,
+                scopes=["https://graph.microsoft.com/.default"],
+            ),
+        )
+        if "access_token" not in result:
+            error = result.get("error_description", result.get("error", "Unknown error"))
+            raise AuthRequiredError(f"Failed to acquire delegated Graph token: {error}")
+        return result["access_token"]
 
     async def _acquire_delegated_token_silent(self) -> str | None:
         """Try to get delegated token from cache without prompting user."""
@@ -197,6 +220,13 @@ class GraphClient:
 
     async def ensure_authenticated(self) -> dict[str, Any]:
         """Ensure the configured auth mode is authenticated and return a status payload."""
+        if get_request_auth():
+            return {
+                "status": "authenticated",
+                "auth_mode": "delegated",
+                "source": "copilot_studio_obo",
+            }
+
         if self.config.auth_mode == "app":
             await self._acquire_app_token()
             return {
@@ -275,6 +305,12 @@ class GraphClient:
 
     async def get_token(self) -> str:
         """Get a valid access token, refreshing if necessary."""
+        request_auth = get_request_auth()
+        if request_auth:
+            if not request_auth.graph_token:
+                request_auth.graph_token = await self._acquire_obo_token(request_auth.access_token)
+            return request_auth.graph_token
+
         if self._token and self._token_expires and datetime.now() < self._token_expires:
             return self._token
 

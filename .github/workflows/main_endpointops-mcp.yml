@@ -64,3 +64,4 @@ jobs:
           app-name: 'EndpointOps-MCP'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_CAD62F9239A44F8D8931A9F3BB02CC8A }}
+          startup-command: 'gunicorn --bind=0.0.0.0 --timeout 600 --worker-class uvicorn.workers.UvicornWorker intune_mcp_server.mcp_app:app'

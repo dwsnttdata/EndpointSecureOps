@@ -1,14 +1,10 @@
 {
     "servers": {
-        "intune-rw-core": {
+        "EndpointOps-MCP": {
             "type": "stdio",
-            "command": "${workspaceFolder}/.venv/Scripts/intune-mcp-server.exe",
+            "command": "${workspaceFolder}/.venv/Scripts/endpointops-mcp.exe",
             "args": [],
-            "env": {
-                "TENANT_ID": "",
-                "CLIENT_ID": "",
-                "CLIENT_SECRET": ""
-            }
+            "env": {}
         }
     }
 }
