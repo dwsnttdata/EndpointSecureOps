@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "endpointops-mcp"
 version = "1.0.0"
-description = "EndpointOps-MCP: full read/write MCP server for Microsoft Intune & Entra ID via Microsoft Graph API"
+description = "EndpointSecureOps-MCP: full read/write MCP server for Microsoft Intune & Entra ID via Microsoft Graph API"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

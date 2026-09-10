@@ -1,6 +1,6 @@
 {
     "servers": {
-        "EndpointOps-MCP": {
+        "EndpointSecureOps-MCP": {
             "type": "stdio",
             "command": "${workspaceFolder}/.venv/Scripts/endpointops-mcp.exe",
             "args": [],

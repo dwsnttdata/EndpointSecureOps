@@ -1,4 +1,4 @@
-# EndpointOps-MCP
+# EndpointSecureOps-MCP
 
 A full **read/write** [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for managing **Microsoft Intune** and **Entra ID (Azure AD)** through the Microsoft Graph API. It gives AI assistants (Claude Desktop, VS Code Copilot, Cursor, Copilot Studio, etc.) direct, structured access to device management, app management, compliance, security, identity, and reporting operations across your tenant.
 
@@ -161,7 +161,7 @@ CloudPC.ReadWrite.All
 ## Installation
 
 ```powershell
-git clone https://github.com/nelladath/EndpointOps-MCP.git
+git clone https://github.com/dwsnttdata/EndpointOps-MCP.git
 cd EndpointOps-MCP
 python -m venv .venv
 .venv\Scripts\Activate.ps1
@@ -197,7 +197,7 @@ See [`env.example`](env.example) for the full list of options (interactive login
 ```json
 {
     "servers": {
-        "EndpointOps-MCP": {
+        "EndpointSecureOps-MCP": {
             "type": "stdio",
             "command": "${workspaceFolder}/.venv/Scripts/endpointops-mcp.exe",
             "args": [],

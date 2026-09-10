@@ -8,7 +8,7 @@ from starlette.routing import Route
 
 
 async def health(request):
-	return JSONResponse({"status": "ok", "service": "EndpointOps-MCP"})
+	return JSONResponse({"status": "ok", "service": "EndpointSecureOps-MCP"})
 
 
 # Exposes native MCP over Streamable HTTP at /mcp.
