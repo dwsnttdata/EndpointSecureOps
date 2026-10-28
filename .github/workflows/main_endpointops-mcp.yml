@@ -2,12 +2,12 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python app to Azure Web App - EndpointSecureOps-MCP
+name: Build and deploy Python app to Azure Web App - EndpointOps-MCP
 
 on:
   push:
     branches:
-      - main
+      - 'main'
   workflow_dispatch:
 
 jobs:
@@ -61,7 +61,6 @@ jobs:
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'EndpointSecureOps-MCP'
+          app-name: 'EndpointOps-MCP'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_CAD62F9239A44F8D8931A9F3BB02CC8A }}
-          startup-command: 'gunicorn --bind=0.0.0.0 --timeout 600 --worker-class uvicorn.workers.UvicornWorker intune_mcp_server.mcp_app:app'
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_FD696D52AD6A4A6BBE449EB84F745338 }}
