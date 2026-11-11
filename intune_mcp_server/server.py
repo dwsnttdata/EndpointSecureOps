@@ -1003,6 +1003,8 @@ async def manage_intune_scripts(
     body: dict | None = None,
     confirm: bool = False,
     script_type: str = "powershell",
+    group_id: str = "",
+    run_remediation_script: bool = False,
 ) -> dict[str, Any]:
     """
     Manage Intune PowerShell scripts, proactive remediations and macOS shell scripts.
@@ -1015,7 +1017,8 @@ async def manage_intune_scripts(
       create   — Upload a new script (body, script_type)
       update   — Update a script (script_id, body, script_type)
       delete   — Delete a script (script_id, script_type, confirm=True)
-      assign   — Assign a script to groups (script_id, body, script_type)
+        assign   — Assign to an Entra security group (script_id, group_id, confirm=True);
+                 body can be used for an advanced Graph assignment payload
       get_status — Device run states for a script (script_id, script_type)
     """
     c = get_graph_client()
@@ -1049,7 +1052,37 @@ async def manage_intune_scripts(
         return {"status": "success"}
 
     if a == "assign":
-        return await c.post(f"{base}/{script_id}/assignments", use_beta=True, json=body or {})
+        guard = _require_confirm(a, confirm)
+        if guard:
+            return guard
+        if not script_id:
+            return {"error": "script_id is required for assign."}
+        if script_type.lower() not in ep_map:
+            return {"error": "script_type must be powershell, remediation, or macos."}
+        if group_id and body:
+            return {"error": "Provide either group_id or body for assign, not both."}
+        if group_id:
+            if script_type.lower() == "remediation":
+                assignment = {
+                    "@odata.type": "#microsoft.graph.deviceHealthScriptAssignment",
+                    "target": {
+                        "@odata.type": "#microsoft.graph.groupAssignmentTarget",
+                        "groupId": group_id,
+                    },
+                    "runRemediationScript": run_remediation_script,
+                }
+                assignment_body = {"deviceHealthScriptAssignments": [assignment]}
+            else:
+                assignment = {
+                    "@odata.type": "#microsoft.graph.deviceManagementScriptGroupAssignment",
+                    "targetGroupId": group_id,
+                }
+                assignment_body = {"deviceManagementScriptGroupAssignments": [assignment]}
+        elif body:
+            assignment_body = body
+        else:
+            return {"error": "Provide group_id or a Graph assignment body for assign."}
+        return await c.post(f"{base}/{script_id}/assign", use_beta=True, json=assignment_body)
 
     if a == "get_status":
         r = await c.get(f"{base}/{script_id}/deviceRunStates", use_beta=True)
