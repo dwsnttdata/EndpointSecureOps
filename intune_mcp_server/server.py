@@ -2,7 +2,7 @@
 """
 Intune & Entra MCP Server — Enterprise Edition (compact tool surface)
 
-Architecture: 34 domain-grouped tools covering 280+ Graph endpoints.
+Architecture: 35 domain-grouped tools covering 280+ Graph endpoints.
 Each tool accepts an `action` parameter so the LLM can invoke any operation
 without the server needing to expose a separate MCP tool per endpoint.
 No external CSV/JSON catalog files are required — everything is self-contained
@@ -10,9 +10,15 @@ in this module, which keeps the server portable for Copilot Studio hosting.
 """
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
 import sys
+import tempfile
+import uuid
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,6 +26,10 @@ if __name__ == "__main__":
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from intune_mcp_server import app_management as am
+from intune_mcp_server import app_packaging as ap
+from intune_mcp_server import app_sources as src
+from intune_mcp_server import vendor_versions as vv
 from intune_mcp_server.config import get_config  # noqa: F401  (ensures .env is loaded)
 from intune_mcp_server.graph_client import AuthRequiredError, get_graph_client
 
@@ -456,45 +466,108 @@ async def manage_intune_apps(
     body: dict | None = None,
     assignment_id: str = "",
     confirm: bool = False,
+    group: str = "",
+    intent: str = "required",
+    mode: str = "add",
+    notifications: str = "",
+    app_type: str = "",
+    target_app_id: str = "",
+    relationship_type: str = "",
 ) -> dict[str, Any]:
     """
-    Manage Intune mobile apps — full CRUD, search, assignments and install status.
+    Manage Intune mobile apps: search, install status, assignments, relationships, catalog updates.
+
+    Easiest paths: assign_group (group by name, intent) and update_catalog_app (app_id). Both preview first
+    and need one confirm=True. Read-only actions never ask.
 
     action values:
-      list            — List all mobile apps (top)
+      list            — List apps with their real type (top, optional app_type e.g. win32CatalogApp)
       get             — Get app details + assignments (app_id)
-      search          — Search apps by display name (search_term)
+      search          — Case-insensitive search by name or publisher (search_term)
       create          — Create/register a new app (body)
       update          — Update app metadata (app_id, body)
       delete          — Delete an app (app_id, confirm=True)
-      assign          — Assign app to groups (app_id, body: {assignments:[...]})
+      get_assignments — Show who an app is assigned to, with group names (app_id)
+      assign_group    — Assign to a group by name or id (app_id, group, intent=required|available|uninstall,
+                        mode=add|replace, notifications for regular Win32 apps, confirm=True).
+                        'All users' and 'All devices' are allowed only when named explicitly.
+      assign          — Advanced: raw assignments (app_id, body: {assignments:[...]}, confirm=True)
       remove_assignment — Remove one assignment (app_id, assignment_id, confirm=True)
-      get_install_status — Get app install summary (app_id)
+      get_install_status — Per-device install state and totals (app_id)
+      get_relationships — Supersedence and dependencies (app_id)
+      set_supersedence — Make app_id an update/replacement of target_app_id (relationship_type=update|replace, confirm=True)
+      set_dependency  — Make app_id require target_app_id (relationship_type=autoInstall|detect, confirm=True)
+      check_catalog_updates — Enterprise App Catalog apps with a newer catalog version, and retired entries
+      update_catalog_app — Create the newest catalog version, link it as an update, copy assignments
+                        (app_id, optional group to deploy to instead, confirm=True)
       list_discovered — List all apps discovered across managed devices
+      check_vendor_versions — Compare detected Win32 apps with the vendor's published latest version
+                        (optional search_term to narrow by name); apps with no official feed are listed as not checked
       get_mam_registrations — List managed app registrations (MAM enrollment)
     """
     c = get_graph_client()
     a = action.lower().strip()
 
-    if a == "list":
-        r = await c.get(f"/deviceAppManagement/mobileApps?$top={top}")
-        return {"count": len(r.get("value", [])), "apps": r.get("value", [])}
+    try:
+        if a == "check_vendor_versions":
+            detected = await ap._collect_pages(c, "/deviceManagement/detectedApps?$top=1000", max_pages=20)
+            return await vv.check_vendor_versions(detected, search_term=search_term, index=WINGET_INDEX)
 
-    if a == "get":
-        app = await c.get(f"/deviceAppManagement/mobileApps/{app_id}")
-        try:
-            asgn = await c.get(f"/deviceAppManagement/mobileApps/{app_id}/assignments")
-            app["_assignments"] = asgn.get("value", [])
-        except Exception:
-            pass
-        return app
+        if a == "list":
+            return await am.list_apps(c, top, app_type)
 
-    if a == "search":
-        r = await c.get(
-            f"/deviceAppManagement/mobileApps?$filter=contains(displayName,'{search_term}')&$top={top}&$count=true",
-            headers={"ConsistencyLevel": "eventual"},
-        )
-        return {"count": len(r.get("value", [])), "apps": r.get("value", [])}
+        if a == "get":
+            app = await c.get(f"/deviceAppManagement/mobileApps/{app_id}", use_beta=True)
+            try:
+                app["_assignments"] = await am.get_assignments(c, app_id)
+            except Exception:
+                pass
+            return app
+
+        if a == "search":
+            return await am.search_apps(c, search_term, top)
+
+        if a == "get_assignments":
+            current = await am.get_assignments(c, app_id)
+            return {"appId": app_id, "assignments": am.describe_assignments(current, await am.group_names(c, current)), "raw": current}
+
+        if a == "assign_group":
+            plan = await am.plan_assignment(c, app_id, group, intent, mode=mode, notifications=notifications)
+            if not confirm:
+                warnings = []
+                if plan["broad"]:
+                    warnings.append(f"This targets {plan['group']['displayName']}: every matching {'user' if 'Users' in plan['group']['displayName'] else 'device'} in the tenant.")
+                if plan["removes"]:
+                    warnings.append("These existing assignments would be removed: " + "; ".join(plan["removes"]))
+                return {"status": "confirmation_required", "nothingChangedYet": True, "app": plan["app"]["displayName"], "before": plan["before"],
+                        "after": plan["after"], "warnings": warnings, "next": "Call again with confirm=True to apply."}
+            return await am.apply_assignments(c, app_id, plan["assignments"])
+
+        if a == "get_relationships":
+            return {"appId": app_id, "relationships": await am.get_relationships(c, app_id)}
+
+        if a in ("set_supersedence", "set_dependency"):
+            link = am.supersedence(target_app_id, relationship_type or "update") if a == "set_supersedence" else am.dependency(target_app_id, relationship_type or "autoInstall")
+            if not confirm:
+                return {"status": "confirmation_required", "nothingChangedYet": True, "relationship": link, "next": "Call again with confirm=True to apply."}
+            return {"status": "success", "relationships": await am.set_relationships(c, app_id, [link])}
+
+        if a == "check_catalog_updates":
+            return await am.check_catalog_updates(c)
+
+        if a == "update_catalog_app":
+            plan = await am.plan_catalog_update(c, app_id, group)
+            if plan["status"] == "up_to_date" or not confirm:
+                return plan if plan["status"] == "up_to_date" else {"status": "confirmation_required", "nothingChangedYet": True, "updates": plan["old"]["displayName"],
+                        "from": plan["old"]["displayVersion"], "to": plan["newPackage"]["version"], "willAssign": plan["assignmentSummary"],
+                        "next": "Call again with confirm=True. The new app is created, linked as an update of the old one, then assigned."}
+            created = await ap.create_catalog_app(c, plan["newPackage"]["id"], {})
+            relationships = await am.set_relationships(c, created["id"], [am.supersedence(app_id, "update")])
+            applied = await am.apply_assignments(c, created["id"], plan["assignments"]) if plan["assignments"] else {"assignments": []}
+            return {"status": "updated", "newAppId": created["id"], "displayName": created.get("displayName"), "version": plan["newPackage"]["version"],
+                    "supersedes": [item for item in relationships if item["targetId"] == app_id], "assignments": applied["assignments"]}
+    except (am.AppManagementError, ap.PackagingError) as error:
+        return {"error": str(error)}
 
     if a == "create":
         return await c.post("/deviceAppManagement/mobileApps", json=body or {})
@@ -513,7 +586,12 @@ async def manage_intune_apps(
         b = body or {}
         if "mobileAppAssignments" not in b and "assignments" in b:
             b = {"mobileAppAssignments": b["assignments"]}
-        return await c.post(f"/deviceAppManagement/mobileApps/{app_id}/assign", json=b)
+        if not confirm:
+            names = await am.group_names(c, b.get("mobileAppAssignments", []))
+            return {"status": "confirmation_required", "nothingChangedYet": True, "willReplaceAllAssignmentsWith": am.describe_assignments(b.get("mobileAppAssignments", []), names),
+                    "currentAssignments": am.describe_assignments(await am.get_assignments(c, app_id), names),
+                    "next": "Call again with confirm=True. This replaces every assignment; use assign_group to add one safely."}
+        return await am.apply_assignments(c, app_id, b.get("mobileAppAssignments", []))
 
     if a == "remove_assignment":
         guard = _require_confirm(a, confirm)
@@ -523,11 +601,11 @@ async def manage_intune_apps(
         return {"status": "success"}
 
     if a == "get_install_status":
-        return await c.get(f"/deviceAppManagement/mobileApps/{app_id}/installSummary")
+        return await am.install_status(c, app_id)
 
     if a == "list_discovered":
-        r = await c.get(f"/deviceManagement/detectedApps?$top={top}", use_beta=True)
-        return {"count": len(r.get("value", [])), "apps": r.get("value", [])}
+        apps = await ap._collect_pages(c, f"/deviceManagement/detectedApps?$top={min(max(top, 1), 1000)}", max_pages=max(1, -(-top // 1000)))
+        return {"count": len(apps[:top]), "apps": apps[:top]}
 
     if a == "get_mam_registrations":
         r = await c.get(f"/deviceAppManagement/managedAppRegistrations?$top={top}")
@@ -2346,6 +2424,305 @@ async def manage_intune_reports(
 
 
 # ===========================================================================
+# TOOL 35 — App packaging, content upload and Enterprise App Catalog
+# ===========================================================================
+def _app_plan(summary: list[str], plan: dict[str, Any]) -> dict[str, Any]:
+    return {"status": "confirmation_required", "nothingChangedYet": True, "summary": summary,
+            "next": "Call again with the same inputs and confirm=True to create it. There are no further prompts after that.",
+            "plan": plan}
+
+
+WINGET_INDEX = src.WingetIndex()
+
+
+def _new_download_dir() -> Path:
+    roots = os.environ.get("APP_PACKAGING_ROOTS", "").strip()
+    base = Path(roots.split(os.pathsep)[0]).expanduser() if roots else Path(tempfile.gettempdir())
+    return base / "endpointsecureops-downloads" / uuid.uuid4().hex[:12]
+
+
+def _merge_source_defaults(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(defaults)
+    if "silentSwitches" in overrides:
+        merged.pop("installCommandLine", None)
+    if "detectPath" in overrides:
+        merged.pop("rules", None)
+    merged.update(overrides)
+    return merged
+
+
+async def _source_search(term: str, top: int) -> dict[str, Any]:
+    top = max(1, min(int(top), 50))
+    result: dict[str, Any] = {}
+    try:
+        result["catalog"] = (await ap.catalog_search(get_graph_client(), term, top=top))["packages"]
+    except Exception as error:
+        result["catalog"], result["catalogError"] = [], str(error)[:160]
+    try:
+        result["winget"] = await asyncio.to_thread(WINGET_INDEX.search, term, top)
+    except src.SourceError as error:
+        result["winget"], result["wingetError"] = [], str(error)
+    try:
+        result["store"] = await asyncio.to_thread(src.store_search, term, min(top, 10))
+    except src.SourceError as error:
+        result["store"], result["storeError"] = [], str(error)
+    result["next"] = ("Catalog apps: add_app with catalog_package_id. Vendor packages: add_app with winget_id (the vendor's own installer, "
+                      "checked against its published SHA-256 and signature). Microsoft Store apps: add_app with store_id.")
+    return result
+
+
+async def _acquire_installer(winget_id: str, version: str, architecture: str, url: str, overrides: dict[str, Any], folder: Path,
+                             resolved: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Download from the vendor, verify the published hash, and refuse an invalid digital signature."""
+    if winget_id:
+        info = resolved or await asyncio.to_thread(src.resolve_winget, WINGET_INDEX, winget_id, version, architecture)
+        target_url, name, sha = info["downloadUrl"], info["fileName"], info["sha256"]
+    else:
+        info, target_url, name, sha = {}, url, src.name_from_url(url), overrides.get("sha256")
+    result = await asyncio.to_thread(src.download_installer, target_url, folder, name, sha)
+    signature = await asyncio.to_thread(ap.verify_signature, Path(result["path"]))
+    if signature["status"] != "Valid" and not overrides.get("allowUnsigned"):
+        shutil.rmtree(folder, ignore_errors=True)
+        raise ap.PackagingError(f"The installer's digital signature is not valid ({signature['status']}). Nothing was created. "
+                                "If you trust this vendor file, repeat with body allowUnsigned=true.")
+    return {**result, "signature": signature, "source": {"wingetId": info.get("wingetId"), "version": info.get("version"), "url": target_url}}
+
+
+@mcp.tool()
+async def manage_app_packaging(
+    action: str,
+    file_path: str = "",
+    source_folder: str = "",
+    setup_file: str = "",
+    output_folder: str = "",
+    search_term: str = "",
+    catalog_package_id: str = "",
+    body: dict | None = None,
+    top: int = 25,
+    overwrite: bool = False,
+    confirm: bool = False,
+    winget_id: str = "",
+    version: str = "",
+    architecture: str = "x64",
+    download_url: str = "",
+    store_id: str = "",
+) -> dict[str, Any]:
+    """
+    Package, inspect and upload Windows apps; find any app from its vendor; add Enterprise App Catalog apps.
+
+    Easiest path: add_app. Give it an app name (search_term), an installer (file_path: .msi, .exe, .msix, .appx
+    or .intunewin), a folder (source_folder + setup_file), a winget_id, a Microsoft Store store_id, or a vendor
+    download_url. For a name it looks in the Enterprise App Catalog first, then in the winget community index,
+    which lists the vendor's own installer URL, SHA-256 hash, silent switches and product code for thousands of apps,
+    and then the Microsoft Store.
+    Downloads come from the vendor over HTTPS, are checked against the published SHA-256 and must carry a valid
+    digital signature (body allowUnsigned=true overrides that, and is reported). It reads the installer, fills in name,
+    publisher, version, commands and detection where it can, builds and encrypts the package, and asks only for
+    what it cannot read. It previews first and needs one confirm=True to create anything; read-only and local
+    actions never ask. body short-hands: silentSwitches (for example "/S"), detectPath (a file that exists once
+    installed), displayName, publisher, description, installCommandLine, uninstallCommandLine, sha256 (download_url).
+
+    Local file access is limited to APP_PACKAGING_ROOTS when set (required when hosted).
+
+    action values:
+      add_app           — Recommended: choose the right app type and create it
+                          (search_term | winget_id | store_id | download_url | file_path | source_folder+setup_file)
+      source_search     — Find an app in the Enterprise App Catalog, the winget community index and the Microsoft Store (search_term, top)
+      source_get        — Vendor facts for one winget package, no download (winget_id, version, architecture)
+      download_installer — Download and verify a vendor installer (winget_id or download_url, output_folder)
+      inspect_installer — Read an .msi/.msix/.appx/.exe, its signature, and suggest install, uninstall and detection (file_path)
+      build_intunewin   — Build a .intunewin locally (source_folder, setup_file, output_folder, overwrite)
+      read_intunewin    — Read metadata of an existing .intunewin (file_path)
+      create_win32_app  — Win32 app from a .intunewin, a single installer, or a folder (confirm=True)
+      create_lob_app    — MSI or MSIX/APPX line-of-business app (file_path, body, confirm=True)
+      catalog_search    — Search the Enterprise App Catalog (search_term, top)
+      catalog_get       — Get one catalog package (catalog_package_id)
+      create_catalog_app — Add a catalog app (catalog_package_id, body, confirm=True)
+    """
+    a = action.lower().strip()
+    overrides = dict(body or {})
+    download_dir: Path | None = None
+    try:
+        if a == "add_app" and store_id:
+            if not store_id.isalnum() or len(store_id) != 12:
+                return {"error": "store_id must be the 12-character Microsoft Store ID, for example 9NFTCH6J7FHV."}
+            listing = next((item for item in await asyncio.to_thread(src.store_search, store_id.upper(), 5) if item["storeId"] == store_id.upper()), None)
+            if listing is None:
+                return {"error": f"No Microsoft Store app has the ID {store_id}. Use source_search to find it."}
+            payload = ap.store_app_payload(store_id.upper(), overrides.pop("displayName", None) or listing["name"], overrides.pop("publisher", None) or listing["publisher"], dict(overrides))
+            if not confirm and ap.require_confirmation():
+                return _app_plan([f"Add Microsoft Store app '{payload['displayName']}' by {payload['publisher']} (Store ID {payload['packageIdentifier']})",
+                                  f"Runs as {payload['installExperience']['runAsAccount']}",
+                                  "Intune installs, updates and removes it from the Store; no installer, commands or detection rules are needed."], {"appPayload": payload})
+            return await ap.create_store_app(get_graph_client(), payload)
+
+        if a == "source_search":
+            return await _source_search(search_term, top)
+
+        if a == "source_get":
+            return await asyncio.to_thread(src.resolve_winget, WINGET_INDEX, winget_id, version, architecture)
+
+        if a == "download_installer":
+            if not (winget_id or download_url):
+                return {"error": "Give winget_id or download_url."}
+            target = ap.resolve_path(output_folder, kind="dir", must_exist=False) if output_folder else _new_download_dir()
+            return await _acquire_installer(winget_id, version, architecture, download_url, overrides, target)
+
+        if a == "add_app":
+            suffix = Path(file_path).suffix.lower()
+            if winget_id or download_url:
+                a = "create_win32_app"
+            elif source_folder or suffix in (".intunewin", ".exe", ".msi"):
+                a = "create_win32_app"
+            elif suffix in ap.LOB_TYPES:
+                a = "create_lob_app"
+            elif search_term and not file_path:
+                a = "catalog_add"
+                if not catalog_package_id:
+                    if not (await ap.catalog_search(get_graph_client(), search_term, top=10))["packages"]:
+                        found = await asyncio.to_thread(WINGET_INDEX.search, search_term, 8)
+                        exact = [item for item in found if src.normalize_name(item["name"]) == src.normalize_name(search_term)]
+                        if len(found) == 1 or len(exact) == 1:
+                            winget_id, a = (exact or found)[0]["id"], "create_win32_app"
+                        elif found:
+                            return {"status": "choose_one", "message": "Not in the Enterprise App Catalog. These vendor packages match; tell me which winget_id to use.", "matches": found}
+                        else:
+                            return {"error": f"'{search_term}' is not in the Enterprise App Catalog or the winget index. If you know the vendor's installer address, use download_url."}
+            else:
+                return {"error": "Give add_app an app name (search_term), a winget_id, a download_url, an installer (file_path), or a folder (source_folder and setup_file)."}
+
+        if a == "create_win32_app" and (winget_id or download_url):
+            resolved: dict[str, Any] = {}
+            caller_rules = "rules" in overrides
+            if winget_id:
+                resolved = await asyncio.to_thread(src.resolve_winget, WINGET_INDEX, winget_id, version, architecture)
+                overrides = _merge_source_defaults(resolved["defaults"], overrides)
+            elif not download_url.lower().startswith("https://"):
+                return {"error": "download_url must be an https:// address."}
+            if not confirm and ap.require_confirmation():
+                name = resolved.get("fileName") or Path(urlsplit(download_url).path).name or "installer.exe"
+                preview = ap.win32_payload(None, name, Path(name).stem + ".intunewin", {key: value for key, value in overrides.items() if key not in ("allowUnsigned", "sha256")})
+                missing = ap.missing_win32_fields(preview) if winget_id else []
+                if missing:
+                    return ap.needs_input(missing)
+                origin = [f"Vendor download: {resolved.get('downloadHost') or urlsplit(download_url).hostname}",
+                          "Verified against the vendor's published SHA-256, and the digital signature is checked" if resolved.get("sha256") else "No published SHA-256 was supplied; the digital signature is still checked",
+                          "If the installer is not validly signed, creation stops unless you add allowUnsigned=true to body."]
+                return _app_plan(ap.describe_win32(preview) + origin + resolved.get("notes", []), {"appPayload": preview, "source": {key: resolved.get(key) for key in ("wingetId", "version", "downloadUrl", "sha256")}})
+            download_dir = _new_download_dir()
+            fetched = await _acquire_installer(winget_id, version, architecture, download_url, overrides, download_dir, resolved)
+            file_path, overrides = fetched["path"], {key: value for key, value in overrides.items() if key not in ("allowUnsigned", "sha256")}
+            if resolved.get("installerType") == "msi" and not caller_rules:
+                overrides.pop("rules", None)  # the downloaded MSI is inspected and gives a version-aware product-code rule
+
+        if a == "inspect_installer":
+            return await asyncio.to_thread(ap.inspect_installer, file_path)
+
+        if a == "build_intunewin":
+            return await asyncio.to_thread(ap.build_intunewin, source_folder, setup_file, output_folder, overwrite=overwrite)
+
+        if a == "read_intunewin":
+            return await asyncio.to_thread(ap.read_intunewin, file_path)
+
+        if a == "create_win32_app":
+            from_package = file_path.lower().endswith(".intunewin")
+            folder = single = None
+            if from_package:
+                package = ap.resolve_path(file_path)
+                meta = await asyncio.to_thread(ap.read_package, package)
+                inspection, setup, package_name = None, meta["setupFile"], package.name
+            else:
+                if source_folder:
+                    folder = ap.resolve_path(source_folder, kind="dir")
+                    setup = setup_file.replace("\\", "/")
+                    candidate = (folder / setup).resolve(strict=False)
+                    if not setup.strip() or not (candidate == folder or folder in candidate.parents) or not candidate.is_file():
+                        return {"error": "setup_file must be an existing file inside source_folder."}
+                else:
+                    single = candidate = ap.resolve_path(file_path)
+                    setup = single.name
+                inspect = candidate.suffix.lower() in (".msi", ".exe")
+                inspection = await asyncio.to_thread(ap.inspect_installer, str(candidate)) if inspect else None
+                package_name = Path(setup).stem + ".intunewin"
+            payload = ap.win32_payload(inspection, setup, package_name, overrides)
+            missing = ap.missing_win32_fields(payload)
+            if missing:
+                return ap.needs_input(missing, inspection["suggestions"] if inspection else None)
+            if not confirm and ap.require_confirmation():
+                return _app_plan(ap.describe_win32(payload), {"appPayload": payload})
+            c = get_graph_client()
+            with tempfile.TemporaryDirectory() as work_dir:
+                if from_package:
+                    package_path = package
+                else:
+                    build_from = ap.stage_single_file(single, Path(work_dir) / "stage") if single else folder
+                    built = await asyncio.to_thread(ap.build_package, build_from, setup, Path(work_dir) / "out")
+                    package_path = Path(built["packagePath"])
+                    meta = await asyncio.to_thread(ap.read_package, package_path)
+                info = ap.upload_info(meta)
+                content = Path(work_dir) / ap.CONTENT_NAME
+                await asyncio.to_thread(ap.extract_encrypted_content, package_path, content)
+                await asyncio.to_thread(ap.verify_mac, content, info)
+                return await ap.upload_app(c, "win32LobApp", payload, content, info)
+
+        if a == "create_lob_app":
+            file = ap.resolve_path(file_path)
+            if file.suffix.lower() not in ap.LOB_TYPES:
+                return {"error": "LOB apps support .msi, .msix, .appx, .msixbundle and .appxbundle. Use create_win32_app for EXE installers."}
+            inspection = await asyncio.to_thread(ap.inspect_installer, str(file))
+            type_name, payload = ap.lob_payload(inspection, overrides)
+            required = ["displayName", "productCode", "productVersion"] if type_name == "windowsMobileMSI" else ["displayName", "identityName", "identityPublisherHash"]
+            missing = [key for key in required if not payload.get(key)]
+            if missing:
+                return ap.needs_input(missing)
+            if not confirm and ap.require_confirmation():
+                return _app_plan(ap.describe_lob(type_name, payload), {"appPayload": payload, "appType": type_name})
+            c = get_graph_client()
+            with tempfile.TemporaryDirectory() as work_dir:
+                encrypted = Path(work_dir) / "content.encrypted"
+                info = await asyncio.to_thread(ap.encrypt_file, file, encrypted)
+                return await ap.upload_app(c, type_name, payload, encrypted, info)
+
+        if a == "catalog_search":
+            return await ap.catalog_search(get_graph_client(), search_term, top=top)
+
+        if a == "catalog_get":
+            return await ap.catalog_get(get_graph_client(), catalog_package_id)
+
+        if a == "catalog_add":
+            c = get_graph_client()
+            matches = (await ap.catalog_search(c, search_term, top=10))["packages"]
+            if not matches:
+                return {"error": f"No Enterprise App Catalog app matches '{search_term}'."}
+            if len(matches) > 1 and not catalog_package_id:
+                return {"status": "choose_one", "message": "Several catalog apps match. Tell me which one (its id), then I will continue.",
+                        "matches": matches}
+            catalog_package_id = catalog_package_id or matches[0]["id"]
+            a = "create_catalog_app"
+
+        if a == "create_catalog_app":
+            c = get_graph_client()
+            package = await ap.catalog_get(c, catalog_package_id)
+            package.setdefault("id", catalog_package_id)
+            converted = await ap.catalog_converted_app(c, catalog_package_id)
+            payload = ap.catalog_app_payload(package, overrides, converted)
+            if not confirm and ap.require_confirmation():
+                app = payload["mobileApp"]
+                lines = [f"Add Enterprise App Catalog app '{app.get('displayName')}' {app.get('displayVersion') or ''} by {app.get('publisher')}".replace("  ", " ")]
+                if app.get("installCommandLine"):
+                    lines.append(f"Install: {app['installCommandLine']}")
+                return _app_plan(lines + ["Microsoft supplies the installer, commands and detection rules."], payload)
+            return await ap.create_catalog_app(c, catalog_package_id, overrides)
+    except (ap.PackagingError, src.SourceError) as error:
+        return {"error": str(error)}
+    finally:
+        if download_dir:
+            shutil.rmtree(download_dir, ignore_errors=True)
+
+    return {"error": f"Unknown action: {action}"}
+
+
+# ===========================================================================
 # TOOL 28 — Discover Available Operations
 # ===========================================================================
 @mcp.tool()
@@ -2370,9 +2747,10 @@ async def discover_graph_operations(category: str = "") -> dict[str, Any]:
             "actions": ["list_bitlocker_keys","get_bitlocker_key","get_filevault_key","get_encryption_report"],
         },
         "manage_intune_apps": {
-            "description": "Mobile app CRUD, assignments, install status and discovered apps",
-            "actions": ["list","get","search","create","update","delete","assign","remove_assignment",
-                        "get_install_status","list_discovered","get_mam_registrations"],
+            "description": "App search, install status, guarded assignments, relationships, catalog updates, vendor version checks",
+            "actions": ["list","get","search","create","update","delete","get_assignments","assign_group","assign","remove_assignment",
+                        "get_install_status","get_relationships","set_supersedence","set_dependency","check_catalog_updates",
+                        "update_catalog_app","list_discovered","check_vendor_versions","get_mam_registrations"],
         },
         "manage_app_config_mam": {
             "description": "App configuration policies and MAM app protection policies",
@@ -2410,6 +2788,11 @@ async def discover_graph_operations(category: str = "") -> dict[str, Any]:
             "actions": ["list_update_rings","get_update_ring","create_update_ring","update_update_ring",
                         "delete_update_ring","list_feature_updates","get_feature_update","create_feature_update",
                         "list_quality_updates","list_driver_updates"],
+        },
+        "manage_app_packaging": {
+            "description": "Find any app from its vendor (catalog, winget index, Microsoft Store), verified download, Win32/LOB packaging and upload",
+            "actions": ["add_app","source_search","source_get","download_installer","inspect_installer","build_intunewin","read_intunewin",
+                        "create_win32_app","create_lob_app","catalog_search","catalog_get","create_catalog_app"],
         },
         "manage_intune_scripts": {
             "description": "PowerShell scripts, proactive remediations and macOS shell scripts",

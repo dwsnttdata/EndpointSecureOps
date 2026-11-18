@@ -2,7 +2,7 @@
 
 A full **read/write** [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for managing **Microsoft Intune** and **Entra ID (Azure AD)** through the Microsoft Graph API. It gives AI assistants (Claude Desktop, VS Code Copilot, Cursor, Copilot Studio, etc.) direct, structured access to device management, app management, compliance, security, identity, and reporting operations across your tenant.
 
-The server exposes **34 MCP tools**, each accepting an `action` parameter so a single tool can drive dozens of related Graph operations without needing one MCP tool per endpoint. In total the tools cover **280+ underlying Microsoft Graph operations**.
+The server exposes **35 MCP tools**, each accepting an `action` parameter so a single tool can drive dozens of related Graph operations without needing one MCP tool per endpoint. In total the tools cover **280+ underlying Microsoft Graph operations**.
 
 > ⚠️ **This server can create, update, and delete real objects in your tenant** (devices, users, groups, policies, apps, etc.). Review the [Permissions](#required-graph-api-permissions) section and scope the app registration carefully before pointing it at a production tenant.
 
@@ -22,6 +22,8 @@ The server exposes **34 MCP tools**, each accepting an `action` parameter so a s
 - Remote actions: sync, restart, lock, rename, locate, wipe, retire, reset passcode, lost mode, defender scan, log collection, diagnostics collection
 - BitLocker / FileVault recovery key lookups and encryption reports
 - Mobile app CRUD, assignments (required/available/uninstall), install status, discovered/detected apps
+- App packaging: find any app from its vendor and add it to Intune. `source_search` looks in the Enterprise App Catalog, the winget community index (the vendor's own installer URL, SHA-256, silent switches and product code for thousands of apps) and the Microsoft Store. `add_app` accepts a name, `winget_id`, `store_id`, `download_url`, a local installer or a folder. Downloads must be HTTPS, match the vendor's published SHA-256 and carry a valid digital signature (`allowUnsigned=true` overrides). The tool also builds `.intunewin` files, inspects MSI/MSIX/EXE installers, and uploads Win32, MSI/MSIX line-of-business, catalog and Store apps (`manage_app_packaging`; creating apps requires `confirm=True`)
+- App management: case-insensitive search, per-device install status (Intune report exports), group assignment by name with before/after preview and guards against All users/All devices, supersedence and dependency links, Enterprise App Catalog update checks (`check_catalog_updates`) and one-step updates (`update_catalog_app`), and vendor version checks (`manage_intune_apps`)
 - App configuration (MAM) and app protection policies
 
 ### Compliance & Configuration
@@ -96,6 +98,7 @@ The server exposes **34 MCP tools**, each accepting an `action` parameter so a s
 | 32 | `manage_tenant_admin` | Tenant Administration |
 | 33 | `manage_intune_reports` | Reports & Analytics |
 | 34 | `discover_graph_operations` | Catalog / Discovery |
+| 35 | `manage_app_packaging` | App Packaging & Enterprise App Catalog |
 
 Each `manage_*` tool takes an `action` parameter (e.g. `manage_intune_devices(action="wipe", device_id="...", confirm=True)`). Call `discover_graph_operations` at any time to get the full, up-to-date list of actions per tool directly from the running server.
 
